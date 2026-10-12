@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bulk Certificate Generator</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; background: #f4f7fb; color: #172033; }
+    main { width: min(1100px, calc(100% - 32px)); margin: 40px auto; }
+    h1 { margin-bottom: 8px; }
+    .muted { color: #64748b; }
+    .card { background: white; border: 1px solid #dbe3ef; border-radius: 14px; padding: 22px; margin-top: 20px; box-shadow: 0 8px 24px #1720330b; }
+    .toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    button { border: 0; border-radius: 8px; padding: 10px 15px; background: #2563eb; color: white; cursor: pointer; font-weight: 600; }
+    button.secondary { background: #475569; }
+    button:disabled { cursor: not-allowed; opacity: .6; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { text-align: left; padding: 11px 8px; border-bottom: 1px solid #e5eaf1; vertical-align: top; }
+    th { color: #475569; font-size: .85rem; }
+    textarea { width: 100%; min-height: 235px; box-sizing: border-box; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; font: 14px ui-monospace, monospace; }
+    .status { padding: 9px 12px; border-radius: 8px; background: #eff6ff; color: #1d4ed8; }
+    .status.error { background: #fef2f2; color: #b91c1c; }
+    .success { color: #15803d; font-weight: 600; }
+    .failed { color: #b91c1c; font-weight: 600; }
+    a { color: #2563eb; }
+    code { background: #eef2ff; padding: 2px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Bulk Certificate Generator</h1>
+    <p class="muted">Submit multiple recipients, inspect job progress, and download generated certificates.</p>
+
+    <section class="card">
+      <h2>1. Create generation job</h2>
+      <p class="muted">Enter a JSON array. Invalid recipients are reported individually without stopping valid certificates.</p>
+      <textarea id="payload">[
+  {
+    "name": "Alice Sharma",
+    "email": "alice@example.com",
+    "course_name": "Python Fundamentals",
+    "completion_date": "2026-10-10"
+  },
+  {
+    "name": "Bob Kumar",
+    "email": "invalid-email",
+    "course_name": "Python Fundamentals",
+    "completion_date": "2026-10-10"
+  }
+]</textarea>
+      <div class="toolbar" style="margin-top: 14px">
+        <button id="create">Generate certificates</button>
+        <span id="message" class="status">Ready</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <h2 style="margin: 0; flex: 1">2. Job status and results</h2>
+        <label>Job ID <input id="jobId" type="number" min="1" placeholder="e.g. 1"></label>
+        <button id="refresh" class="secondary">Refresh</button>
+      </div>
+      <div id="summary" class="muted" style="margin-top: 14px">Create a job to see its status.</div>
+      <div style="overflow-x: auto">
+        <table>
+          <thead><tr><th>Recipient</th><th>Email</th><th>Status</th><th>Certificate</th><th>Error</th></tr></thead>
+          <tbody id="results"><tr><td colspan="5" class="muted">No results yet.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const payload = document.querySelector("#payload");
+    const createButton = document.querySelector("#create");
+    const refreshButton = document.querySelector("#refresh");
+    const jobId = document.querySelector("#jobId");
+    const message = document.querySelector("#message");
+    const summary = document.querySelector("#summary");
+    const results = document.querySelector("#results");
+
+    function showMessage(text, error = false) {
+      message.textContent = text;
+      message.className = `status${error ? " error" : ""}`;
+    }
+
+    async function api(url, options) {
+      const response = await fetch(url, options);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
+      return data;
+    }
+
+    function render(data) {
+      const job = data.job || data;
+      const recipientResults = data.recipients || [];
+      const total = job.total_recipients || 0;
+      const completed = (job.successful_count || 0) + (job.failed_count || 0);
+      const progress = total ? Math.round(completed / total * 100) : 0;
+      summary.innerHTML = `<strong>Job #${job.id}</strong> · ${job.status} · ${progress}% complete · ` +
+        `${job.successful_count} successful · ${job.failed_count} failed · ${total} total`;
+      results.innerHTML = recipientResults.map(item => {
+        const certificate = item.status === "success"
+          ? `<a href="/certificates/${item.id}" target="_blank">Download PDF</a>` : "—";
+        return `<tr><td>${escapeHtml(item.recipient_name || "—")}</td>` +
+          `<td>${escapeHtml(item.email || "—")}</td>` +
+          `<td class="${item.status === "success" ? "success" : "failed"}">${item.status}</td>` +
+          `<td>${certificate}</td><td>${escapeHtml(item.error_message || "—")}</td></tr>`;
+      }).join("") || '<tr><td colspan="5" class="muted">No results.</td></tr>';
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      }[char]));
+    }
+
+    async function refreshJob() {
+      if (!jobId.value) return showMessage("Enter a job ID first.", true);
+      try {
+        showMessage("Loading job...");
+        render(await api(`/certificate-jobs/${jobId.value}`));
+        showMessage("Job loaded.");
+      } catch (error) {
+        showMessage(error.message, true);
+      }
+    }
+
+    createButton.addEventListener("click", async () => {
+      try {
+        const recipients = JSON.parse(payload.value);
+        if (!Array.isArray(recipients)) throw new Error("The payload must be a JSON array.");
+        createButton.disabled = true;
+        showMessage("Generating certificates...");
+        const job = await api("/certificate-jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ recipients })
+        });
+        jobId.value = job.id;
+        render(await api(`/certificate-jobs/${job.id}`));
+        showMessage(`Job #${job.id} completed.`);
+      } catch (error) {
+        showMessage(error.message, true);
+      } finally {
+        createButton.disabled = false;
+      }
+    });
+    refreshButton.addEventListener("click", refreshJob);
+  </script>
+</body>
+</html>
